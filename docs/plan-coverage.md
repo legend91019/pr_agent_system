@@ -16,8 +16,8 @@
 | §4 | `agents.yaml` 全字段 + 严格校验 + `${VAR}` 展开 | ✅ | `config.py` `extra="forbid"`；`test_config.py`（12 例） |
 | §4 | `enabled:false` 不参与分配；fallback 成员必须 enabled | ✅ | `allocate.py` + 配置校验；`test_allocate.py` |
 | §5 | 项目层 whitelist/blacklist/principles 全字段 | ✅ | `ProjectsConfig`；空列表（只有注释）也能解析 |
-| §5 | `weights` 三维权衡评分 | ✅ | `governance.score_record`；`test_governance.py::test_score_record_*`（公式为解释性实现，见下） |
-| §5 | `require_backing` / `max_days_to_first_review` 参与评分 | ❌ | 仅解析与校验；池记录没有"背书类型/首次 review 天数"字段，无证据可用，未编造数据 |
+| §5 | `weights` 三维权衡评分 | ⚠️ | **用户裁决（2026-10-18）下线**：不做加权评分，选题按 plan-week 顺序取第一个合规候选；`weights`/`require_backing`/`max_days_to_first_review` 三键已从 schema 删除，旧配置残留仅告警不报错。竞态 PR 超上限保留为硬门禁（veto），`test_jobs.py::test_run_day_rejects_over_competition_and_takes_next_in_order` |
+| §5（增补） | 配置面板（`pr_agent config wizard` / `config show`） | ✅ | 计划外新增（用户 2026-10-18 要求）：交互式填 agents.yaml（含各 CLI 自动探测）与 projects.yaml（白/黑名单、min_stars、竞态上限、权限模式、每日上限、预留额），写前留 `.bak`、dry-run 校验；`test_config_wizard.py`（3 例） |
 | §6.1 | full_autonomy：gh 自检失败即 BLOCKED | ✅ | `pick` 前置；`test_full_autonomy_requires_gh_auth` |
 | §6.2 | assisted：零 GitHub 写；gh 只读 | ✅ | prompt 契约 + `ghcli.READONLY_PREFIXES` 白名单 |
 | §6.3 | handoff 四件套 + 回填 + 放弃 | ✅ | `handoff.validate/finish/cancel`；8 例测试 |
@@ -63,9 +63,9 @@
 
 ## 结论
 
-- **计划范围内"写代码"的部分已全部落地**，110 项 pytest 全绿。
-- **未完成的两类**：
+- **计划范围内"写代码"的部分已全部落地**，112 项 pytest 全绿。
+- **未完成的一类**：
   1. **未真实跑**（不是没实现）：真实 coding agent 端到端、GitHub 写操作、`schtasks` 注册、交叉 review 接真实模型、两家并行。需要环境/授权与人工放行。
-  2. **一处明确未实现**：`require_backing` 与 `max_days_to_first_review` 未参与评分——池记录没有对应字段，硬凑就是编数据，因此保持"解析 + 校验但不打分"，等数据源。
-- **一处解释性实现需确认**：§5 的 `weights` 三维公式。当前取 `potential = 审计分/10`、`feasibility = scope_gate PASS 且规模数据齐全`、`speed = 1 - 竞态数/上限`，缺证据一律 0 分并列 `missing`。若你要的口径不同（例如 speed 按 Issue 存在时长、feasibility 按改动行数分档），改 `governance.score_record` 一处即可。
+- **一处用户裁决的口径变更（第三轮，2026-10-18）**：`weights` 三维加权评分、`require_backing`、`max_days_to_first_review` 整体下线——选题优先级交给 agent/人工判断；三个配置键从 schema 删除（旧配置残留仅告警）；竞态 PR 上限保留为硬门禁。
+- **计划外新增（第三轮，2026-10-18）**：`pr_agent config wizard/show` 配置面板（用户要求），覆盖 agents.yaml 与 projects.yaml 的全部可填项。
 - **两处偏差**（状态机不允许的连边、`schtasks` 引号问题）已记录在 `docs/changelog.md`，未做降级。

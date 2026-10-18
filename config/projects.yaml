@@ -16,7 +16,6 @@ blacklist:
 principles:
   min_stars: 150                  # 非白名单仓库的硬门槛
   enforce_min_stars: true         # false 时关闭该门槛（需人工显式修改）
-  max_recent_competing_prs: 3     # 同 Issue 语义竞态 PR 上限（P3 评分使用）
-  max_days_to_first_review: 21    # PR 首次 review 等待上限（P3 评分使用）
-  require_backing: [big-tech, foundation]
-  weights: {potential: 0.4, feasibility: 0.4, speed: 0.2}
+  max_recent_competing_prs: 3     # 同 Issue 语义竞态 PR 上限（硬门禁；超限拒绝）
+  # 用户裁决（2026-10-18）：不做加权评分，选题由 agent/人工判断；
+  # weights / require_backing / max_days_to_first_review 已废弃删除。

@@ -208,26 +208,20 @@ class ProjectEntry(BaseModel):
 
 
 class Principles(BaseModel):
+    """硬门槛原则（用户裁决 2026-10-18：不做加权评分，选题交给 agent/人工判断）。
+
+    weights / require_backing / max_days_to_first_review 已废弃：
+    加载时忽略并记入 config_warnings，不再参与任何决策。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     min_stars: int | None = Field(default=None, ge=0)
     enforce_min_stars: bool = True
     max_recent_competing_prs: int | None = Field(default=None, ge=0)
-    max_days_to_first_review: int | None = Field(default=None, ge=0)
-    require_backing: list[str] = Field(default_factory=list)
-    weights: dict[str, float] = Field(
-        default_factory=lambda: {"potential": 0.4, "feasibility": 0.4, "speed": 0.2}
-    )
 
-    @field_validator("weights")
-    @classmethod
-    def _weights_sum(cls, value: dict[str, float]) -> dict[str, float]:
-        if not value:
-            raise ValueError("weights 不能为空")
-        total = sum(value.values())
-        if abs(total - 1.0) > 0.001:
-            raise ValueError(f"weights 之和必须为 1.0，当前为 {total}")
-        return value
+
+DEPRECATED_PRINCIPLE_KEYS = ("weights", "require_backing", "max_days_to_first_review")
 
 
 class ProjectsConfig(BaseModel):
@@ -236,6 +230,7 @@ class ProjectsConfig(BaseModel):
     whitelist: list[ProjectEntry] = Field(default_factory=list)
     blacklist: list[ProjectEntry] = Field(default_factory=list)
     principles: Principles = Field(default_factory=Principles)
+    config_warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _no_overlap(self) -> "ProjectsConfig":
@@ -307,6 +302,20 @@ def load_projects_config(paths: Paths) -> ProjectsConfig:
     for key in ("whitelist", "blacklist"):
         if raw.get(key) is None:
             raw[key] = []
+    # 废弃键：忽略而不是报错（老配置不应因此打不开），但要留下明确警告
+    warnings: list[str] = []
+    principles = raw.get("principles")
+    if isinstance(principles, dict):
+        dropped = [key for key in DEPRECATED_PRINCIPLE_KEYS if key in principles]
+        for key in dropped:
+            principles.pop(key)
+        if dropped:
+            warnings.append(
+                "已忽略废弃配置项（用户裁决 2026-10-18，选题不做加权评分）："
+                + "、".join(dropped)
+                + "。请从 projects.yaml 中删除这些键。"
+            )
+    raw["config_warnings"] = warnings
     try:
         return ProjectsConfig.model_validate(raw)
     except ValidationError as exc:
@@ -319,9 +328,21 @@ def load_projects_config(paths: Paths) -> ProjectsConfig:
 
 def dump_projects_config(paths: Paths, config: ProjectsConfig) -> None:
     """写回 projects.yaml（人工与前端 agent 双写，见 §10）。"""
-    payload = config.model_dump(mode="json")
+    payload = config.model_dump(mode="json", exclude={"config_warnings"})
     paths.projects_config.parent.mkdir(parents=True, exist_ok=True)
     paths.projects_config.write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+
+def dump_agents_config(paths: Paths, config: AgentsConfig) -> None:
+    """写回 agents.yaml（配置面板使用；密钥仍只经环境变量，不落盘）。"""
+    payload = config.model_dump(mode="json", exclude={"config_warnings"})
+    for agent in payload.get("agents", {}).values():
+        agent.pop("name", None)  # name 是加载期回填的运行时字段，不写盘
+    paths.agents_config.parent.mkdir(parents=True, exist_ok=True)
+    paths.agents_config.write_text(
         yaml.safe_dump(payload, allow_unicode=True, sort_keys=False, default_flow_style=False),
         encoding="utf-8",
     )

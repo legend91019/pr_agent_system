@@ -38,7 +38,7 @@
 调度器 pr_agent core
   · 权限模式（full_autonomy / assisted）→ 决定 prompt 增量与 GitHub 门禁
   · 额度感知分配（quota 记账 + fallback 链）
-  · 白/黑名单（config/projects.yaml）+ 原则评分
+  · 白/黑名单（config/projects.yaml）+ 硬门槛
   · 状态机（复用 open_coding/scripts/pool.py）
   · 定时作业（pool-maint / run-day / monitor）
   ↓ headless 适配层（统一 spawn · 事件流 · 结果回收）
@@ -156,13 +156,12 @@ whitelist:                  # 允许主动深耕
 blacklist:                  # 显式永不投入
   - repo: someone/noisy-repo
     reason: 维护者多次无理由关 PR
-principles:                 # 原则评分（黑/白名单的泛化形式）
+principles:                 # 硬门槛（不做加权评分）
   min_stars: 150
-  max_recent_competing_prs: 3      # 同 Issue 语义竞态 PR 数上限
-  max_days_to_first_review: 21     # PR 首次 review 等待
-  require_backing: [big-tech, foundation]   # 大厂/基金会背书加分项
-  weights: {potential: 0.4, feasibility: 0.4, speed: 0.2}
+  max_recent_competing_prs: 3      # 同 Issue 语义竞态 PR 数上限（超限拒绝，硬门禁）
 ```
+
+> **用户裁决（2026-10-18）**：原计划的三维加权评分（`weights` / `require_backing` / `max_days_to_first_review`）**下线**——选题优先级交给 agent/人工判断（run-day 按 plan-week 顺序取第一个合规候选，人工可经 `pick` 显式指定）。这三个键已从 schema 删除；旧配置里若仍存在，加载时忽略并在 `config_warnings` 告警。
 
 治理规则（§10）：白名单三来源（人工手写 / 前端 agent 提案 / 后端 agent 发现上报），agent 写入的条目**默认不生效**，经前端呈现、人工批准（`approved: true` 由人工动作触发）后才参与分配。
 
@@ -264,6 +263,7 @@ class Adapter(Protocol):
 
 ```text
 pr_agent status                     # 池子/额度/任务/模式 一屏
+pr_agent config wizard|show         # 交互式配置面板 / 查看生效配置与缺口
 pr_agent pick [--repo R --issue N]  # 人工选题 → 打包执行
 pr_agent run <task_id> / cancel <task_id>
 pr_agent task handoff-done <task_id> [--comment-url U] [--pr-url U]
@@ -290,7 +290,7 @@ score(agent, task) = enabled && available && quota_left && model_fit(规模→de
 
 ## 10. 白/黑名单治理（功能联动）
 
-- 分配前过滤：repo ∈ blacklist → 拒；repo ∈ approved whitelist → 通过；其余走 `principles` 评分（P3 实现；P1/P2 仅显式名单 + `min_stars` 硬门槛）。
+- 分配前过滤：repo ∈ blacklist → 拒；repo ∈ approved whitelist → 通过；其余走 `principles` 硬门槛（`min_stars`、竞态 PR 上限）。不做加权评分（用户裁决 2026-10-18）；多个合规候选时按 plan-week 顺序取第一个，选题优先级交给 agent/人工判断。
 - 前端 agent 调 `whitelist propose`：写入 `added_by: agent, approved: false`；前端呈现给人工；人工批准（前端命令或直接改 YAML）→ 生效。
 - 后端 agent 在执行中发现潜力项目（如 review 中见到的仓库）：写入 `tasks\...\discoveries\`，由池子维护作业汇总上报前端，同一审批链。
 - 所有提案/批准动作写事件日志。
@@ -335,7 +335,7 @@ score(agent, task) = enabled && available && quota_left && model_fit(规模→de
 - 验收：两家并行两 worktree 互不干扰；额度满正确降级到 fallback；三作业幂等（重跑不重复留言/认领）；断路器（reserve 不足→停产）生效。
 
 **P3 治理 + 交叉 review**
-- 范围：`principles` 评分、whitelist 提案链、`discoveries` 上报、cross_review。
+- 范围：whitelist 提案链、`discoveries` 上报、cross_review。
 - 验收：未批准提案绝不参与分配；交叉 review 发现的 Blocker 能打回；dossier 含两厂商意见。
 
 **P4 入口与扩展（可选）**

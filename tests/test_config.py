@@ -102,13 +102,21 @@ def test_projects_whitelist_blacklist_overlap_rejected(tmp_path):
     assert "同时出现在白名单与黑名单" in str(excinfo.value)
 
 
-def test_projects_weights_must_sum_to_one(tmp_path):
+def test_projects_deprecated_keys_ignored_with_warning(tmp_path):
+    """用户裁决（2026-10-18）：weights 等评分键已废弃——忽略并告警，而不是打不开配置。"""
     ws = build_workspace(tmp_path)
     payload = {"whitelist": [], "blacklist": [],
-               "principles": {"weights": {"potential": 0.5, "feasibility": 0.4, "speed": 0.2}}}
+               "principles": {"min_stars": 150, "max_recent_competing_prs": 3,
+                              "weights": {"potential": 0.5, "feasibility": 0.4, "speed": 0.2},
+                              "require_backing": ["big-tech"],
+                              "max_days_to_first_review": 21}}
     ws.paths.projects_config.write_text(yaml.safe_dump(payload), encoding="utf-8")
-    with pytest.raises(ConfigError):
-        load_projects_config(ws.paths)
+    config = load_projects_config(ws.paths)
+    assert config.principles.min_stars == 150
+    assert config.principles.max_recent_competing_prs == 3
+    assert len(config.config_warnings) == 1
+    assert "weights" in config.config_warnings[0]
+    assert "require_backing" in config.config_warnings[0]
 
 
 def test_unapproved_proposal_not_effective(tmp_path):

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
-import pytest
 import yaml
 
 from pr_agent import governance
@@ -89,73 +86,5 @@ def test_collect_discoveries(tmp_path):
     assert found and found[0]["task_id"] == "Super__Repo__7"
 
 
-# ---------------------------------------------------------------- 原则评分（§5 / §10 P3）
-def _scored_record(ws, **overrides) -> dict:
-    record = json.loads(ws.paths.pool_issues.read_text(encoding="utf-8").splitlines()[0])
-    record.update(overrides)
-    return record
-
-
-def test_score_record_uses_all_three_dimensions(tmp_path):
-    ws = build_workspace(tmp_path)
-    record = _scored_record(ws, collision_prs=[])
-    score = governance.score_record(ws.projects, record)
-    # 0.4*0.9(score=9) + 0.4*1.0(scope PASS) + 0.2*1.0(无竞态)
-    assert score.total == pytest.approx(0.96, abs=1e-3)
-    assert score.missing == [] and score.eligible is True
-
-
-def test_score_record_fails_closed_when_evidence_missing(tmp_path):
-    ws = build_workspace(tmp_path)
-    record = _scored_record(ws)
-    record.pop("score", None)
-    record.pop("collision_prs", None)
-    score = governance.score_record(ws.projects, record)
-    assert score.breakdown["potential"] == 0
-    assert score.breakdown["speed"] == 0
-    assert any("score" in item for item in score.missing)
-    assert any("collision_prs" in item for item in score.missing)
-
-
-def test_score_record_vetoes_too_many_competing_prs(tmp_path):
-    ws = build_workspace(tmp_path)
-    ws.projects.principles.max_recent_competing_prs = 3
-    record = _scored_record(ws, collision_prs=[1, 2, 3, 4])
-    score = governance.score_record(ws.projects, record)
-    assert score.veto and score.eligible is False
-
-
-# ---------------------------------------------------------------- 原则评分（§5 / §10 P3）
-def _scored_record(ws, **overrides) -> dict:
-    record = json.loads(ws.paths.pool_issues.read_text(encoding="utf-8").splitlines()[0])
-    record.update(overrides)
-    return record
-
-
-def test_score_record_uses_all_three_dimensions(tmp_path):
-    ws = build_workspace(tmp_path)
-    record = _scored_record(ws, collision_prs=[])
-    score = governance.score_record(ws.projects, record)
-    # 0.4*0.9(score=9) + 0.4*1.0(scope PASS) + 0.2*1.0(无竞态)
-    assert score.total == pytest.approx(0.96, abs=1e-3)
-    assert score.missing == [] and score.eligible is True
-
-
-def test_score_record_fails_closed_when_evidence_missing(tmp_path):
-    ws = build_workspace(tmp_path)
-    record = _scored_record(ws)
-    record.pop("score", None)
-    record.pop("collision_prs", None)
-    score = governance.score_record(ws.projects, record)
-    assert score.breakdown["potential"] == 0
-    assert score.breakdown["speed"] == 0
-    assert any("score" in item for item in score.missing)
-    assert any("collision_prs" in item for item in score.missing)
-
-
-def test_score_record_vetoes_too_many_competing_prs(tmp_path):
-    ws = build_workspace(tmp_path)
-    ws.projects.principles.max_recent_competing_prs = 3
-    record = _scored_record(ws, collision_prs=[1, 2, 3, 4])
-    score = governance.score_record(ws.projects, record)
-    assert score.veto and score.eligible is False
+# 原则加权评分（score_record）已按用户裁决（2026-10-18）下线：
+# 选题由 agent/人工判断；硬门禁见上方 check_repo 用例，竞态上限在 test_jobs.run_day 覆盖。

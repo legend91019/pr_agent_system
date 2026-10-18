@@ -16,6 +16,7 @@ import typer
 from . import __version__, ghcli, governance, handoff, schedule
 from .adapters import probe_all
 from .config import AgentsConfig, ProjectsConfig, load_agents_config, load_projects_config
+from .config_wizard import ConsoleIO, ScriptedIO, run_wizard
 from .daemon import run_daemon
 from .errors import PrAgentError
 from .events import read_jsonl
@@ -33,10 +34,12 @@ task_app = typer.Typer(no_args_is_help=True, help="任务级操作")
 job_app = typer.Typer(no_args_is_help=True, help="定时作业（幂等）")
 whitelist_app = typer.Typer(no_args_is_help=True, help="白名单治理")
 repo_app = typer.Typer(no_args_is_help=True, help="本地仓库准备")
+config_app = typer.Typer(no_args_is_help=True, help="配置面板")
 app.add_typer(task_app, name="task")
 app.add_typer(job_app, name="job")
 app.add_typer(whitelist_app, name="whitelist")
 app.add_typer(repo_app, name="repo")
+app.add_typer(config_app, name="config")
 
 GLOBAL = {"workspace": None, "open_coding": None}
 
@@ -129,6 +132,8 @@ def render_status(paths: Paths, config: AgentsConfig, projects: ProjectsConfig |
     if breaker.get("opened_on"):
         lines.append(f"断路器：熔断中（{breaker['opened_on']}，连续失败 {breaker.get('consecutive_failures')}）")
     if projects is not None:
+        for warning in projects.config_warnings:
+            lines.append(f"projects 配置提醒：{warning}")
         pending = projects.pending_proposals()
         if pending:
             lines.append("待批准白名单提案：" + "，".join(entry.repo for entry in pending))
@@ -449,6 +454,59 @@ def uninstall_schedule(
     """移除三个计划任务（默认只打印命令）。"""
     result = schedule.uninstall(confirm=confirm, dry_run=dry_run)
     _echo(result, as_json)
+
+
+# ---------------------------------------------------------------- 配置面板
+@config_app.command("wizard")
+def config_wizard(
+    non_interactive: bool = typer.Option(False, "--non-interactive",
+                                          help="全部取默认值（按本机探测结果），不提问"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """交互式配置面板：生成 config/agents.yaml 与 config/projects.yaml。"""
+    paths = load_paths(GLOBAL["workspace"], GLOBAL["open_coding"])
+    io: ConsoleIO | ScriptedIO = ConsoleIO() if not non_interactive else ScriptedIO()
+    try:
+        summary = run_wizard(paths, io)
+        _echo(summary, as_json)
+    except PrAgentError as exc:
+        _fail(exc, as_json)
+        raise typer.Exit(1)
+
+
+@config_app.command("show")
+def config_show(as_json: bool = typer.Option(False, "--json")) -> None:
+    """查看当前生效配置与缺口（不写任何文件）。"""
+    paths = load_paths(GLOBAL["workspace"], GLOBAL["open_coding"])
+    try:
+        config = load_agents_config(paths)
+        projects = load_projects_config(paths)
+    except PrAgentError as exc:
+        typer.secho(f"[配置错误] {exc.message}", fg="red", err=True)
+        raise typer.Exit(1)
+    payload = {
+        "mode": config.mode,
+        "max_parallel": config.max_parallel,
+        "weekly_pr_cap": config.weekly_pr_cap,
+        "fallback_chain": config.fallback_chain,
+        "agents": {
+            name: {"enabled": agent.enabled, "adapter": agent.adapter,
+                   "models": agent.models, "quota": agent.quota.model_dump()}
+            for name, agent in config.agents.items()
+        },
+        "cross_review": config.cross_review.model_dump(),
+        "frontend": {**config.frontend.model_dump(), "ready": config.frontend.ready,
+                     "gaps": config.frontend.describe_gap()},
+        "projects": {
+            "whitelist": [entry.repo for entry in projects.whitelist if entry.approved],
+            "blacklist": [entry.repo for entry in projects.blacklist],
+            "pending_proposals": [entry.repo for entry in projects.pending_proposals()],
+            "principles": projects.principles.model_dump(),
+            "warnings": projects.config_warnings,
+        },
+        "config_warnings": config.config_warnings,
+    }
+    _echo(payload, as_json)
 
 
 # ---------------------------------------------------------------- 治理 / 仓库

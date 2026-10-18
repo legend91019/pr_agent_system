@@ -95,3 +95,19 @@
 **仍未闭合（如实记录）**：
 - `require_backing`、`max_days_to_first_review` 未参与评分：池记录没有背书类型与首次 review 天数，硬算就是编数据。
 - 真实 agent 端到端、GitHub 写操作、`schtasks` 真实注册、交叉 review 接真实模型、两家并行：均需环境与授权，本轮未执行。
+
+---
+
+## 第三轮：用户裁决落地 + 配置面板（2026-10-18）
+
+用户两项决定：① 不做加权评分，选题交给 agent/人工判断；② 新增配置面板。端到端真实跑由用户晚间自行进行。
+
+1. **评分下线（§5 口径变更）**
+   - 删除 `governance.score_record` / `PrincipleScore`；`run-day` 不再排序，按 plan-week 顺序取第一个合规候选。
+   - `weights`、`require_backing`、`max_days_to_first_review` 从 `ProjectsConfig` schema 删除；旧配置残留时忽略并在 `config_warnings` 告警（不报错）。
+   - **保留**：`min_stars` 硬门槛、竞态 PR 上限 veto（`max_recent_competing_prs`）——这两个是门槛不是评分。
+2. **新增配置面板 `pr_agent config`**
+   - `config wizard`：交互式生成/更新 `agents.yaml`（各 CLI 自动探测 + enabled/模型/额度类型与上限）与 `projects.yaml`（白/黑名单增删、min_stars、竞态上限、权限模式 full_autonomy/assisted、run-day 每日上限、reserve 预留额）；已有值作为默认回显，写前留 `.bak`，落盘前 dry-run 校验；结尾自动跑 `doctor`。
+   - `config show`：脱敏显示当前配置与 `config_warnings`；`status` 增加待批准白名单提案提示。
+3. 测试 110 → **112 项全绿**：删 4 例评分用例，新增竞态门禁按序取下一候选 1 例 + 配置面板 3 例（含旧键残留仅告警）。
+

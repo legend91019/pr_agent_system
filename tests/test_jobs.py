@@ -305,3 +305,28 @@ def test_run_day_skips_when_prerefresh_fails(tmp_path):
 
     result = run_day(ws.paths, ws.config, ws.projects, pool=FakePool())
     assert result.status == "skipped" and "刷新失败" in result.message
+
+
+def test_run_day_rejects_over_competition_and_takes_next_in_order(tmp_path):
+    """用户裁决（2026-10-18）：不做加权评分；竞态超上限仍是硬门禁，按 plan-week 顺序取下一个合规候选。"""
+    ws = build_workspace(tmp_path)
+    ws.projects.principles.max_recent_competing_prs = 3
+    base = json.loads(ws.paths.pool_issues.read_text(encoding="utf-8").splitlines()[0])
+    over = {**base, "id": "Super/Repo#7", "issue_number": 7, "collision_prs": [1, 2, 3, 4]}
+    clean = {**base, "id": "Super/Repo#8", "issue_number": 8, "collision_prs": []}
+    clean2 = {**base, "id": "Super/Repo#9", "issue_number": 9, "collision_prs": []}
+
+    class FakePool:
+        def show(self, status=None):
+            return []
+
+        def plan_week(self, target=3, reserve=6):
+            return 0, {"selected": [over, clean, clean2], "target": 3,
+                       "eligible_count": 3, "warnings": []}, None
+
+    result = run_day(ws.paths, ws.config, ws.projects, dry_run=True, pool=FakePool())
+    assert result.status == "dry_run"
+    assert result.evidence["candidate"]["issue_number"] == 8
+    reasons = " ".join(str(item["reason"]) for item in result.evidence["rejections"])
+    assert "竞态 PR 4 个 > 上限 3" in reasons
+    assert "scores" not in result.evidence  # 评分已下线

@@ -234,9 +234,8 @@ def run_day(
 
     candidate = None
     gate_rejections = []
-    scored: list[tuple[float, dict]] = []
-    scores: list[dict] = []
     active_issues = {task.issue_id for task in tasks if task.status in {"packed", "running", "handoff_pending"}}
+    limit = projects.principles.max_recent_competing_prs
     for record in selected:
         if str(record.get("id")) in active_issues:
             gate_rejections.append({"id": record.get("id"), "reason": "已有在途任务"})
@@ -245,19 +244,18 @@ def run_day(
         if not gate.allowed:
             gate_rejections.append({"id": record.get("id"), "reason": gate.reason})
             continue
-        score = governance.score_record(projects, record)
-        scores.append({"id": record.get("id"), **score.as_event()})
-        if score.veto:
-            gate_rejections.append({"id": record.get("id"), "reason": score.veto})
+        competing = record.get("collision_prs")
+        if isinstance(competing, list) and limit is not None and len(competing) > limit:
+            gate_rejections.append({"id": record.get("id"),
+                                    "reason": f"竞态 PR {len(competing)} 个 > 上限 {limit}（硬门禁）"})
             continue
-        scored.append((score.total, record))
-    if scored:
-        # §10：多个合规候选时按 principles 加权评分降序挑，评分缺失项已在证据里列明
-        scored.sort(key=lambda pair: pair[0], reverse=True)
-        candidate = scored[0][1]
+        # 用户裁决（2026-10-18）：不做加权评分；按 plan-week 顺序取第一个合规候选，
+        # 选题优先级由人工/前端 agent 经 `pr_agent pick` 显式指定。
+        candidate = record
+        break
     if candidate is None:
         return JobResult("run-day", "skipped", "计划内候选均被治理门禁或在途任务排除",
-                         {"rejections": gate_rejections, "scores": scores})
+                         {"rejections": gate_rejections})
 
     repo = str(candidate["repo"])
     issue_number = int(candidate["issue_number"])
@@ -266,7 +264,6 @@ def run_day(
             "candidate": {"repo": repo, "issue_number": issue_number},
             "mode": config.mode,
             "rejections": gate_rejections,
-            "scores": scores,
             "plan_warnings": plan.get("warnings", []),
         })
 
