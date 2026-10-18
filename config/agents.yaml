@@ -1,0 +1,56 @@
+# pr_agent 调度器配置（DEVELOPMENT_PLAN §4）
+# 所有 ${VAR} 在加载期展开；关键路径缺变量 = 启动失败（不猜默认值）。
+# 密钥只从环境变量读取，绝不写入本文件。
+
+mode: assisted              # assisted | full_autonomy（可被 `pr_agent pick --mode` 覆盖）
+max_parallel: 2             # 全局同时执行任务上限
+weekly_pr_cap: 3            # 每周最多启动的生产任务数
+
+# 注意：出现在 fallback_chain 的 agent 必须 enabled: true（加载期校验）。
+# 未安装的 agent 保持 enabled: false 且不放入 chain，安装并自检通过后再加入。
+fallback_chain: [claude-code, gemini]
+
+frontend:                   # 前端对话 LLM（可配置；不参与关键路径，缺失只警告）
+  provider: openai-compatible
+  base_url: ${PR_AGENT_FRONTEND_BASE_URL}
+  model: ${PR_AGENT_FRONTEND_MODEL}
+  api_key_env: PR_AGENT_FRONTEND_KEY
+
+agents:
+  claude-code:
+    enabled: true
+    adapter: claude_code
+    quota: {budget_type: window, window_hours: 5, max_tasks_per_window: 10, cooldown_minutes: 30}
+    models: {default: sonnet, large: opus}   # >400 行改动使用 large
+    timeout_minutes: 90
+    max_turns: 200
+  gemini:
+    enabled: true
+    adapter: gemini
+    quota: {budget_type: daily, max_tasks_per_day: 20, cooldown_minutes: 0}
+    models: {default: gemini-2.5-pro}
+    timeout_minutes: 60
+    max_turns: 200
+  codex:
+    enabled: false          # 安装后置 true 并加入 fallback_chain
+    adapter: codex
+    quota: {budget_type: weekly, max_tasks_per_week: 30}
+    models: {default: gpt-5-codex}
+    timeout_minutes: 90
+  opencode:
+    enabled: false
+    adapter: opencode
+    quota: {budget_type: none}
+    models: {}
+    timeout_minutes: 60
+  workbuddy:
+    enabled: false          # P4：接口待定，adapter 会明确拒绝
+    adapter: workbuddy
+    quota: {budget_type: none}
+    models: {}
+
+cross_review:               # P3：跨厂商第二意见；默认关闭
+  enabled: false
+  reviewer: null            # 留空则按 fallback_chain 选第一家不同厂商的可用 agent
+  max_diff_lines: 1500
+  blocking_findings: [Blocker, Major]

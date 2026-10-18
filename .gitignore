@@ -1,0 +1,24 @@
+# 本地会话记忆（本机状态，不入库）
+.workbuddy/
+
+# 运行期产物（不含密钥，但属于本机状态，不入库）
+tasks/
+logs/
+scripts/job-*.cmd
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 测试与虚拟环境
+.pytest_cache/
+.pytest_tmp/
+.venv/
+venv/
+
+# 本地覆盖配置（如需放置个人仓库/模型偏好，用 local 后缀）
+config/*.local.yaml
+config/*.local.yml

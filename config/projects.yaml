@@ -1,0 +1,22 @@
+# 项目层策略（DEVELOPMENT_PLAN §5/§10）
+# 白名单三来源：人工手写 / 前端 agent 提案（approved: false 待批） / 后端 agent 发现上报。
+# agent 写入的条目默认不生效，必须 approved: true 才参与分配。
+
+whitelist:
+  - repo: Tencent/BrowserSkill
+    added_by: human
+    approved: true
+    reason: 当前重点深耕仓库
+
+blacklist:
+  # 示例（取消注释后生效）：显式永不投入的仓库
+  # - repo: someone/noisy-repo
+  #   reason: 维护者多次无理由关 PR
+
+principles:
+  min_stars: 150                  # 非白名单仓库的硬门槛
+  enforce_min_stars: true         # false 时关闭该门槛（需人工显式修改）
+  max_recent_competing_prs: 3     # 同 Issue 语义竞态 PR 上限（P3 评分使用）
+  max_days_to_first_review: 21    # PR 首次 review 等待上限（P3 评分使用）
+  require_backing: [big-tech, foundation]
+  weights: {potential: 0.4, feasibility: 0.4, speed: 0.2}
