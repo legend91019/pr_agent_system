@@ -50,3 +50,59 @@ def test_validate_warns_on_skeleton(tmp_path):
     result = dossier.validate(path)
     assert result["problems"] == []
     assert result["warnings"]
+
+
+def test_cross_review_section_merges_and_is_idempotent(tmp_path):
+    """§12：交叉 review 发现必须同时并入 dossier，且重复执行不堆叠。"""
+    path = tmp_path / "d.md"
+    path.write_text("## 1. A\n## 5. B\n## 6. C\n## 8. D\n", encoding="utf-8")
+    result = {
+        "reviewer": "gemini",
+        "blocking": [],
+        "findings": {"Blocker": [], "Major": [], "Minor/Nit": ["建议补充边界测试"]},
+        "conclusion": "APPROVE",
+        "path": "tasks/T1/handoff/review_findings.md",
+        "error": None,
+    }
+    for _ in range(2):
+        dossier.append_cross_review_section(path, result)
+    text = path.read_text(encoding="utf-8")
+    assert text.count(dossier.CR_BEGIN) == 1 and text.count(dossier.CR_END) == 1
+    assert "gemini" in text and "APPROVE" in text
+    assert "建议补充边界测试" in text
+    # 调度器补充证据段不被破坏
+    dossier.append_orchestrator_section(
+        path, task_id="T1", mode="assisted", agent="claude-code", model="m",
+        branch="fix/issue-7", base_sha="base123", head_sha="head123", diff=_diff(),
+        exit_code=0, timed_out=False, handoff_check=None, allocation={},
+    )
+    text = path.read_text(encoding="utf-8")
+    assert dossier.CR_BEGIN in text and dossier.BEGIN in text
+
+
+def test_cross_review_section_merges_and_is_idempotent(tmp_path):
+    """§12：交叉 review 发现必须同时并入 dossier，且重复执行不堆叠。"""
+    path = tmp_path / "d.md"
+    path.write_text("## 1. A\n## 5. B\n## 6. C\n## 8. D\n", encoding="utf-8")
+    result = {
+        "reviewer": "gemini",
+        "blocking": [],
+        "findings": {"Blocker": [], "Major": [], "Minor/Nit": ["建议补充边界测试"]},
+        "conclusion": "APPROVE",
+        "path": "tasks/T1/handoff/review_findings.md",
+        "error": None,
+    }
+    for _ in range(2):
+        dossier.append_cross_review_section(path, result)
+    text = path.read_text(encoding="utf-8")
+    assert text.count(dossier.CR_BEGIN) == 1 and text.count(dossier.CR_END) == 1
+    assert "gemini" in text and "APPROVE" in text
+    assert "建议补充边界测试" in text
+    # 调度器补充证据段不被破坏
+    dossier.append_orchestrator_section(
+        path, task_id="T1", mode="assisted", agent="claude-code", model="m",
+        branch="fix/issue-7", base_sha="base123", head_sha="head123", diff=_diff(),
+        exit_code=0, timed_out=False, handoff_check=None, allocation={},
+    )
+    text = path.read_text(encoding="utf-8")
+    assert dossier.CR_BEGIN in text and dossier.BEGIN in text

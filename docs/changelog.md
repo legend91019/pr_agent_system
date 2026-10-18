@@ -72,3 +72,26 @@
 4. 任何 GitHub 写操作（留言/认领/推分支/建 PR），以及 `full_autonomy` 的真实 PR 创建。
 5. 交叉 review 接真实第二厂商模型跑完整任务。
 6. 真实池子当前 5 条 `VERIFIED` 全部被 scope gate 排除（变更规模不达标），故 `run-day` 拒绝生产；需先 `pool.py annotate` 补 `scope_metrics` 或等新候选。
+
+---
+
+## 第二轮：对照计划逐节复核后的补缺（2026-10-18）
+
+复核方式：按 §2–§17 逐节核对代码与测试，产出 `docs/plan-coverage.md`。发现并修掉 5 处口径不符：
+
+1. **§12 交叉 review 发现未并入 dossier**（原来只写 `handoff/review_findings.md`）。
+   新增 `dossier.append_cross_review_section`，用独立标记包裹、重复执行只替换不堆叠；`runner` 在记录事件后立即并入，Blocker 打回前也已经落进档案。
+2. **§7 monitor 未记录竞态 PR**。
+   新增 `ghcli.competing_prs`（同仓只列一次开放 PR，按正文/标题里的 `#N`、`/issues/N` 匹配），`monitor` 把它写进 observation 与 `PR_MONITOR` 事件，并按 `principles.max_recent_competing_prs` 标注 `competition_exceeded`；查询失败记 `UNKNOWN`，不用空列表冒充"无竞态"。
+3. **§7.1 "每个作业开始先刷新再决策" 未落实**。
+   `run-day` 开工前对**临近过期**（已用 >60% 新鲜期）的 `VERIFIED` 做有界刷新（≤3），失败累计 2 次或断路器已开即当日停产；`--dry-run` 只打印 refresh 命令。`pool-maint` / `monitor` 本身就是刷新语义。
+4. **§5/§10 `principles` 加权评分未实现**（只有 min_stars 硬门槛，`weights` 配置形同虚设）。
+   新增 `governance.score_record`：`potential = 审计分/10`、`feasibility = scope_gate PASS 且规模数据齐全`、`speed = 1 - 竞态数/上限`，缺证据一律 0 分并列出 `missing`；竞态超上限直接 veto。`run-day` 在多个合规候选间按总分降序挑选，评分明细进证据。
+5. **§13.3 fork + upstream PR 只约束了"不许动 main"，没写清怎么推**。
+   `prompt.task_context` 增加分支策略：无 upstream 写权限必须先 `gh repo fork`、推 fork、`gh pr create --repo <upstream> --head <账号>:<分支>`，且不得把 fork 默认分支当 base。fork 的创建动作由 agent(full_autonomy)/人工(assisted) 执行，调度器不代做。
+
+测试从 101 → **110 项**，新增覆盖：交叉 review 并入 dossier 幂等、评分三维/veto/缺证据、monitor 竞态（含 UNKNOWN 分支）、run-day 开工前刷新（正常/干跑/失败停产）。
+
+**仍未闭合（如实记录）**：
+- `require_backing`、`max_days_to_first_review` 未参与评分：池记录没有背书类型与首次 review 天数，硬算就是编数据。
+- 真实 agent 端到端、GitHub 写操作、`schtasks` 真实注册、交叉 review 接真实模型、两家并行：均需环境与授权，本轮未执行。

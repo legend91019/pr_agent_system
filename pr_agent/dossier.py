@@ -21,6 +21,8 @@ from .poolctl import Pool
 
 BEGIN = "<!-- pr-agent:orchestrator:begin -->"
 END = "<!-- pr-agent:orchestrator:end -->"
+CR_BEGIN = "<!-- pr-agent:cross-review:begin -->"
+CR_END = "<!-- pr-agent:cross-review:end -->"
 
 
 def path_for(paths: Paths, repo: str, issue_number: int) -> Path:
@@ -157,6 +159,57 @@ def append_orchestrator_section(
     if BEGIN in text and END in text:
         head, _, rest = text.partition(BEGIN)
         _, _, tail = rest.partition(END)
+        text = head.rstrip("\n") + "\n\n" + section + tail
+    else:
+        text = text.rstrip("\n") + "\n\n" + section + "\n"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def append_cross_review_section(path: Path, result: dict) -> Path:
+    """把交叉 review 的第二意见并入 dossier（DEVELOPMENT_PLAN §12）。
+
+    与调度器补充证据段同样用标记包裹，重复执行只替换不堆叠。
+    """
+    if not path.is_file():
+        raise BlockedError(f"dossier 不存在，无法并入交叉 review：{path}")
+    findings = result.get("findings") or {}
+    blocking = result.get("blocking") or []
+
+    def bullets(name: str) -> list[str]:
+        items = findings.get(name) or []
+        return [f"- {item}" for item in items] or ["- 无"]
+
+    section = "\n".join([
+        CR_BEGIN,
+        "",
+        "## 10. 交叉 review（第二意见，由 pr_agent 追加）",
+        "",
+        f"- 追加时间：`{now_iso()}`",
+        f"- reviewer：`{result.get('reviewer') or 'UNKNOWN'}`",
+        f"- 结论：`{result.get('conclusion') or 'UNKNOWN'}`",
+        f"- 阻断项：{len(blocking)}",
+        f"- 原始输出：`{result.get('path') or 'NOT RECORDED'}`",
+        f"- 执行错误：{result.get('error') or '无'}",
+        "",
+        "### 10.1 Blocker",
+        "",
+        *bullets("Blocker"),
+        "",
+        "### 10.2 Major",
+        "",
+        *bullets("Major"),
+        "",
+        "### 10.3 Minor/Nit",
+        "",
+        *bullets("Minor/Nit"),
+        "",
+        CR_END,
+    ])
+    text = path.read_text(encoding="utf-8")
+    if CR_BEGIN in text and CR_END in text:
+        head, _, rest = text.partition(CR_BEGIN)
+        _, _, tail = rest.partition(CR_END)
         text = head.rstrip("\n") + "\n\n" + section + tail
     else:
         text = text.rstrip("\n") + "\n\n" + section + "\n"

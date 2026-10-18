@@ -526,6 +526,8 @@ class Runner:
             )
             task.notes.append(cross_review.summary_line(cross_result))
             events.emit("cross_review", cross_result.as_dict())
+            # §12：第二意见必须同时并入 pr_reviews/<owner>__<repo>__<issue>.md
+            dossier_mod.append_cross_review_section(dossier_path, cross_result.as_dict())
             if cross_result.blocking:
                 self._transition(task, "CODING", {
                     "reason": "cross_review_blocking_findings",

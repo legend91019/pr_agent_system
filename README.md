@@ -131,7 +131,7 @@ pr_agent chat [MESSAGE]                            # 可选前端 LLM（读 conf
 pr_agent doctor                                   # 资产 OK、claude/gemini 可用、codex/opencode 未安装（如实报告）
 pr_agent status                                   # 68 条池记录：VERIFIED=5，其余分布可见
 pr_agent pick Tencent/BrowserSkill 392 --dry-run   # → BLOCKED：scope_gate=MISSING（拒绝开工）
-pr_agent job run-day --dry-run                     # → skipped：plan-week 0/3 且 reserve 0/6
+pr_agent job run-day --dry-run                     # → 先打印临近过期候选的 refresh，再给 plan-week 结论
 pr_agent job pool-maint --dry-run                  # → 打印 8 条待 refresh 命令，不执行
 pr_agent job monitor --dry-run                     # → 打印 7 条只读 gh 命令，不执行
 pr_agent install-schedule                          # → 打印 3 条 schtasks + 包装脚本内容
@@ -143,10 +143,10 @@ pr_agent daemon --once --dry-run                   # → 三作业顺序跑完�
 ## 10. 测试
 
 ```bash
-pytest -q     # 101 项，全离线：仿真 pool.py / 仿真 adapter / 临时 git 仓库
+pytest -q     # 110 项，全离线：仿真 pool.py / 仿真 adapter / 临时 git 仓库
 ```
 
-覆盖：配置严格校验（含环境变量展开、空列表、未批准提案）、额度窗口/冷却、分配与降级、prompt 拼装（canonical + 模式增量）、handoff 四件套校验与回填幂等、dossier 渲染与调度器补证、锁（重入/陈旧回收/并发槽）、git worktree/diff、三作业 dry-run 与断路器、计划任务包装脚本、cross_review、前端一次性问答注入状态事实。
+覆盖：配置严格校验（含环境变量展开、空列表、未批准提案）、额度窗口/冷却、分配与降级、prompt 拼装（canonical + 模式增量 + fork 分支策略）、handoff 四件套校验与回填幂等、dossier 渲染与调度器补证、交叉 review 并入 dossier 的幂等、原则评分三维与竞态 veto、monitor 竞态 PR（查询失败记 UNKNOWN）、run-day 开工前刷新、锁（重入/死进程回收/并发槽）、git worktree/diff、三作业 dry-run 与断路器、计划任务包装脚本、前端一次性问答注入状态事实。
 
 ## 11. 已知限制（未验证项）
 
@@ -154,10 +154,13 @@ pytest -q     # 101 项，全离线：仿真 pool.py / 仿真 adapter / 临时 g
 - **adapter 探测有超时保护**：`gemini --version` 首次探测曾 15s 未返回（按 fail-closed 记为不可用），重试后正常；探测结果带缓存，`doctor` 每次重新确认。真实任务前建议先 `doctor` 看当前可用性，不要凭历史结果开工。
 - **定时作业未真实注册**：仅验证了命令生成与 daemon 单轮；`schtasks --confirm` 与 `execution_mode=manual_only` 的放开留待人工决定。
 - **`gh` 写操作未实测**：`full_autonomy` 的留言/推分支/建 PR 依赖 open_coding 的 token 安装，本轮未执行任何 GitHub 写操作。
-- **交叉 review 默认关闭**：逻辑与打回路径已单测，但未接真实第二厂商模型跑过。
+- **交叉 review 默认关闭**：逻辑、打回路径与并入 dossier 均已单测，但未接真实第二厂商模型跑过。
+- **两处字段未参与评分**：`require_backing` / `max_days_to_first_review` 只解析和校验，池记录没有对应证据字段，未编造打分。
+- **原则评分公式是解释性实现**：`potential=审计分/10`、`feasibility=scope_gate PASS 且规模数据齐全`、`speed=1-竞态数/上限`，缺证据一律 0（fail-closed）。口径若需调整，只改 `governance.score_record`。
 
 ## 12. 相关文档
 
 - `DEVELOPMENT_PLAN.md` —— 唯一需求来源（本实现的对照基准）
 - `docs\changelog.md` —— 分期交付记录、计划歧义裁决、未验证项清单
+- `docs\plan-coverage.md` —— **逐节对照计划的覆盖矩阵**（✅/🟡/⚠️/❌ 与证据）
 - `D:\Desktop\open_coding\workflow\operator-guide.md` / `automation.md` —— 周度运维契约

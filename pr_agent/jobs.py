@@ -195,6 +195,32 @@ def run_day(
                          f"并发已满（{len(active)}/{config.max_parallel}），今日不新增任务",
                          {"active": [task.task_id for task in active]})
 
+    # §7.1：开始先刷新再决策——只刷新"接近过期"的 VERIFIED（有界、失败即熔断），
+    # 避免拿半天前的审计结果做今天的生产决策。
+    records_all = pool.show()
+    near_expiry = _near_expiry(records_all, _freshness_hours(paths), limit=3)
+    if dry_run and near_expiry:
+        return JobResult("run-day", "dry_run",
+                         f"将先刷新 {len(near_expiry)} 个临近过期候选，再跑 plan-week",
+                         {"refreshes": [f"python scripts/pool.py refresh --repo {r.get('repo')} "
+                                        f"--issue {r.get('issue_number')}" for r in near_expiry]})
+    refresh_failures: list[dict] = []
+    refreshed: list[dict] = []
+    for record in near_expiry:
+        local_repo = paths.repo_dir(str(record.get("repo") or ""))
+        try:
+            updated = pool.refresh(str(record["repo"]), int(record["issue_number"]),
+                                   local_repo if local_repo.is_dir() else None)
+            refreshed.append({"id": record.get("id"), "status": updated.get("status")})
+        except PrAgentError as exc:
+            refresh_failures.append({"id": record.get("id"), "error": str(exc)})
+            breaker.record_failure("refresh", f"{record.get('id')}: {exc}")
+    if len(refresh_failures) >= 2 or breaker.is_open():
+        return JobResult("run-day", "skipped",
+                         "开工前刷新失败（≥2 或断路器已开），按契约今日停产",
+                         {"refreshed": refreshed, "failures": refresh_failures,
+                          "breaker": breaker.state()})
+
     rc, plan, raw = pool.plan_week(target=3, reserve=6)
     selected = list(plan.get("selected", [])) if plan else []
     incomplete = plan is None or len(selected) < int(plan.get("target", 3)) or bool(plan.get("warnings"))
@@ -202,10 +228,14 @@ def run_day(
         return JobResult("run-day", "skipped",
                          "plan-week 不完整，按契约跳过今日生产（不降门禁凑数）",
                          {"exit": rc, "warnings": (plan or {}).get("warnings", []),
-                          "stdout_tail": raw.stdout[-2000:], "stderr_tail": raw.stderr[-2000:]})
+                          "stdout_tail": getattr(raw, "stdout", "")[-2000:],
+                          "stderr_tail": getattr(raw, "stderr", "")[-2000:],
+                          "prerefresh": refreshed})
 
     candidate = None
     gate_rejections = []
+    scored: list[tuple[float, dict]] = []
+    scores: list[dict] = []
     active_issues = {task.issue_id for task in tasks if task.status in {"packed", "running", "handoff_pending"}}
     for record in selected:
         if str(record.get("id")) in active_issues:
@@ -215,11 +245,19 @@ def run_day(
         if not gate.allowed:
             gate_rejections.append({"id": record.get("id"), "reason": gate.reason})
             continue
-        candidate = record
-        break
+        score = governance.score_record(projects, record)
+        scores.append({"id": record.get("id"), **score.as_event()})
+        if score.veto:
+            gate_rejections.append({"id": record.get("id"), "reason": score.veto})
+            continue
+        scored.append((score.total, record))
+    if scored:
+        # §10：多个合规候选时按 principles 加权评分降序挑，评分缺失项已在证据里列明
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        candidate = scored[0][1]
     if candidate is None:
         return JobResult("run-day", "skipped", "计划内候选均被治理门禁或在途任务排除",
-                         {"rejections": gate_rejections})
+                         {"rejections": gate_rejections, "scores": scores})
 
     repo = str(candidate["repo"])
     issue_number = int(candidate["issue_number"])
@@ -228,6 +266,7 @@ def run_day(
             "candidate": {"repo": repo, "issue_number": issue_number},
             "mode": config.mode,
             "rejections": gate_rejections,
+            "scores": scores,
             "plan_warnings": plan.get("warnings", []),
         })
 
@@ -260,10 +299,12 @@ def monitor(
     *,
     dry_run: bool = False,
     pool: Pool | None = None,
+    projects: ProjectsConfig | None = None,
 ) -> JobResult:
     pool = pool or Pool(paths)
     paths.require_assets()
     records = [record for record in pool.show() if record.get("status") in MONITOR_STATUSES]
+    max_competing = projects.principles.max_recent_competing_prs if projects else None
     targets = []
     for record in records:
         match = PR_URL.match(str(record.get("pr_url") or ""))
@@ -278,11 +319,16 @@ def monitor(
             "commands": [
                 f"gh pr view {item['number']} --repo {item['repo']} --json state,mergeable,reviewDecision,statusCheckRollup,comments"
                 for item in targets if item.get("repo")
+            ] + [
+                f"gh pr list --repo {repo} --state open --json number,title,url,body --limit 100（同一仓库只读一次，用于竞态 PR）"
+                for repo in sorted({item["repo"] for item in targets if item.get("repo")})
             ],
             "skipped": [item for item in targets if item.get("state") == "skipped"],
+            "max_recent_competing_prs": max_competing,
         })
 
     observations = []
+    cache: dict = {}
     for item in targets:
         if item.get("state") == "skipped":
             observations.append(item)
@@ -295,6 +341,21 @@ def monitor(
         checks = view.get("statusCheckRollup") or []
         failing = [c.get("name") or c.get("context") for c in checks
                    if str(c.get("conclusion") or c.get("state") or "").upper() in {"FAILURE", "ERROR", "TIMED_OUT"}]
+
+        # 竞态 PR（§7）：查询失败记 UNKNOWN，绝不用空列表冒充"没有竞态"
+        issue_number = _issue_number(str(item.get("id")))
+        competing: list[dict] | None | str
+        if issue_number is None:
+            competing = "UNKNOWN"
+        else:
+            competing = ghcli.competing_prs(item["repo"], issue_number,
+                                            own_numbers={int(item["number"])}, cache=cache)
+            if competing is None:
+                competing = "UNKNOWN"
+        exceeded = None
+        if isinstance(competing, list) and max_competing is not None:
+            exceeded = len(competing) > max_competing
+
         observation = {
             **item,
             "state": view.get("state"),
@@ -304,12 +365,15 @@ def monitor(
             "ci_failing": failing,
             "updated_at": view.get("updatedAt"),
             "comments": len(view.get("comments") or []),
+            "competing_prs": competing,
+            "competition_exceeded": exceeded,
         }
         observations.append(observation)
         pool_summary_event(
             paths, issue_id=str(item["id"]), kind="PR_MONITOR",
             evidence={key: observation[key] for key in
-                      ("state", "mergeable", "review_decision", "ci_total", "ci_failing", "comments")},
+                      ("state", "mergeable", "review_decision", "ci_total", "ci_failing",
+                       "comments", "competing_prs", "competition_exceeded")},
         )
         try:
             if view.get("state") == "MERGED":
@@ -332,5 +396,42 @@ def run_job(name: str, paths: Paths, config: AgentsConfig, projects: ProjectsCon
     if name == "run-day":
         return run_day(paths, config, projects, dry_run=dry_run)
     if name == "monitor":
-        return monitor(paths, config, dry_run=dry_run)
+        return monitor(paths, config, dry_run=dry_run, projects=projects)
     raise ValueError(f"未知作业：{name}")
+
+
+def _issue_number(issue_id: str) -> int | None:
+    tail = issue_id.rsplit("#", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
+def _freshness_hours(paths: Paths) -> int:
+    try:
+        workflow = json.loads((paths.open_coding / "workflow" / "config.yaml").read_text(encoding="utf-8"))
+        return int(workflow.get("freshness_hours", 12))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return 12
+
+
+def _near_expiry(records: list[dict], freshness_hours: int, *, limit: int = 3) -> list[dict]:
+    """挑出即将过期的 VERIFIED 记录（已用掉 60% 以上新鲜期），按剩余时间升序。"""
+    now = datetime.now(timezone.utc)
+    threshold = freshness_hours * 0.6
+    candidates = []
+    for record in records:
+        if record.get("status") != "VERIFIED" or not record.get("issue_number"):
+            continue
+        stamp = record.get("last_verified_at") or record.get("updated_at")
+        if not isinstance(stamp, str):
+            continue
+        try:
+            verified_at = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if verified_at.tzinfo is None:
+            verified_at = verified_at.replace(tzinfo=timezone.utc)
+        age_hours = (now - verified_at).total_seconds() / 3600
+        if age_hours >= threshold:
+            candidates.append((age_hours, record))
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    return [record for _, record in candidates[:limit]]

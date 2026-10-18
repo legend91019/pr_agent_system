@@ -104,6 +104,10 @@ def task_context(
             f"- 一 Issue 一文档审查档案（必须生成并补全）：`{dossier_path}`",
             f"- handoff 目录：`{handoff_dir}`",
             f"- GitHub 权限边界：{github_rule}",
+            f"- 分支策略（§13）：禁止直接改动 `{repo}` 的 main/master。若无 upstream 写权限，"
+            f"必须先 fork（`gh repo fork {repo} --clone=false`）并把分支推到 fork，"
+            f"再用 `gh pr create --repo {repo} --head <你的账号>:<分支>` 向 upstream 提交 PR；"
+            "不得把 fork 的默认分支当成 base。",
             "- 禁止修改 open_coding 的 `workflow/`、`docs/`、`scripts/`、`ISSUE_SELECTION_RULES.md`、"
             "`GITHUB_TOKEN_SETUP.md`；禁止读取、复制或输出任何 token 文件。",
             "- 不得在 main/master 上改动；不得把上一个任务的上下文、未提交文件或测试结论带入本任务。",

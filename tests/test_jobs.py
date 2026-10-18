@@ -106,3 +106,202 @@ def test_monitor_records_unknown_without_pr_url(tmp_path):
 
 def _record(ws) -> dict:
     return json.loads((ws.paths.pool_issues).read_text(encoding="utf-8").splitlines()[0])
+
+
+def test_monitor_records_competing_prs(tmp_path, monkeypatch):
+    """§7：monitor 必须把同 Issue 竞态 PR 记为事件，并按 principles 阈值标注超标。"""
+    from pr_agent import jobs
+
+    ws = build_workspace(tmp_path, status="PENDING_HUMAN")
+    record = {**_record(ws), "pr_url": "https://github.com/Super/Repo/pull/12"}
+
+    class FakePool:
+        def show(self, status=None):
+            return [record]
+
+        def transition(self, *args, **kwargs):
+            raise AssertionError("monitor 不得改池状态")
+
+    monkeypatch.setattr(jobs.ghcli, "pr_view", lambda repo, number: {
+        "number": number, "state": "OPEN", "mergeable": "MERGEABLE",
+        "reviewDecision": "REVIEW_REQUIRED", "statusCheckRollup": [], "updatedAt": "2026-10-18T00:00:00Z",
+        "comments": [],
+    })
+    monkeypatch.setattr(jobs.ghcli, "competing_prs", lambda *a, **kw: [
+        {"number": 13, "title": "fix #7 other way", "url": "https://github.com/Super/Repo/pull/13"},
+        {"number": 14, "title": "another fix", "url": "https://github.com/Super/Repo/pull/14"},
+    ])
+    ws.projects.principles.max_recent_competing_prs = 1
+    result = monitor(ws.paths, ws.config, dry_run=False, pool=FakePool(), projects=ws.projects)
+    observation = result.evidence["observations"][0]
+    assert [item["number"] for item in observation["competing_prs"]] == [13, 14]
+    assert observation["competition_exceeded"] is True
+    events = ws.paths.pool_events.read_text(encoding="utf-8")
+    assert "PR_MONITOR" in events and "competing_prs" in events
+
+
+def test_monitor_marks_competing_query_unknown_on_failure(tmp_path, monkeypatch):
+    """查询失败只能记 UNKNOWN，不能用空列表冒充"没有竞态"。"""
+    from pr_agent import jobs
+
+    ws = build_workspace(tmp_path, status="PENDING_HUMAN")
+    record = {**_record(ws), "pr_url": "https://github.com/Super/Repo/pull/12"}
+
+    class FakePool:
+        def show(self, status=None):
+            return [record]
+
+        def transition(self, *args, **kwargs):
+            raise AssertionError("monitor 不得改池状态")
+
+    monkeypatch.setattr(jobs.ghcli, "pr_view", lambda repo, number: {
+        "number": number, "state": "OPEN", "mergeable": "UNKNOWN",
+        "reviewDecision": None, "statusCheckRollup": [], "updatedAt": None, "comments": [],
+    })
+    monkeypatch.setattr(jobs.ghcli, "competing_prs", lambda *a, **kw: None)
+    result = monitor(ws.paths, ws.config, dry_run=False, pool=FakePool(), projects=ws.projects)
+    observation = result.evidence["observations"][0]
+    assert observation["competing_prs"] == "UNKNOWN"
+    assert observation["competition_exceeded"] is None
+
+
+def _age_record(ws, hours: float) -> dict:
+    from datetime import datetime, timedelta, timezone
+
+    record = _record(ws)
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(microsecond=0)
+    record["last_verified_at"] = stamp.isoformat().replace("+00:00", "Z")
+    record["updated_at"] = record["last_verified_at"]
+    return record
+
+
+def test_run_day_refreshes_near_expiry_before_planning(tmp_path):
+    """§7.1：开工前先刷新临近过期的候选，再跑 plan-week。"""
+    ws = build_workspace(tmp_path)
+    record = _age_record(ws, 11)  # freshness=12h，已用 11h
+    calls: list[tuple] = []
+
+    class FakePool:
+        def show(self, status=None):
+            return [record]
+
+        def refresh(self, repo, issue, local_repo=None):
+            calls.append((repo, issue))
+            return {**record, "status": "VERIFIED"}
+
+        def plan_week(self, target=3, reserve=6):
+            return 2, {"selected": [], "target": 3, "warnings": ["weekly plan incomplete"]}, None
+
+        def health(self):
+            return {"total": 1, "by_status": {"VERIFIED": 1}}
+
+        def transition(self, *args, **kwargs):
+            raise AssertionError("不应迁移状态")
+
+    result = run_day(ws.paths, ws.config, ws.projects, pool=FakePool())
+    assert calls == [("Super/Repo", 7)]
+    assert result.status == "skipped" and "plan-week 不完整" in result.message
+
+
+def test_run_day_dry_run_lists_pending_refresh(tmp_path):
+    ws = build_workspace(tmp_path)
+    record = _age_record(ws, 11)
+
+    class FakePool:
+        def show(self, status=None):
+            return [record]
+
+        def refresh(self, *args, **kwargs):
+            raise AssertionError("dry-run 不得刷新")
+
+    result = run_day(ws.paths, ws.config, ws.projects, dry_run=True, pool=FakePool())
+    assert result.status == "dry_run"
+    assert any("pool.py refresh" in command for command in result.evidence["refreshes"])
+
+
+def test_run_day_skips_when_prerefresh_fails(tmp_path):
+    ws = build_workspace(tmp_path)
+    record = _age_record(ws, 11)
+
+    class FakePool:
+        def show(self, status=None):
+            return [record, {**record, "id": "Super/Repo#8", "issue_number": 8}]
+
+        def refresh(self, *args, **kwargs):
+            from pr_agent.errors import PoolError
+
+            raise PoolError("refresh failed")
+
+    result = run_day(ws.paths, ws.config, ws.projects, pool=FakePool())
+    assert result.status == "skipped" and "刷新失败" in result.message
+
+
+def _age_record(ws, hours: float) -> dict:
+    from datetime import datetime, timedelta, timezone
+
+    record = _record(ws)
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=hours)).replace(microsecond=0)
+    record["last_verified_at"] = stamp.isoformat().replace("+00:00", "Z")
+    record["updated_at"] = record["last_verified_at"]
+    return record
+
+
+def test_run_day_refreshes_near_expiry_before_planning(tmp_path):
+    """§7.1：开工前先刷新临近过期的候选，再跑 plan-week。"""
+    ws = build_workspace(tmp_path)
+    record = _age_record(ws, 11)  # freshness=12h，已用 11h
+    calls: list[tuple] = []
+
+    class FakePool:
+        def show(self, status=None):
+            return [record]
+
+        def refresh(self, repo, issue, local_repo=None):
+            calls.append((repo, issue))
+            return {**record, "status": "VERIFIED"}
+
+        def plan_week(self, target=3, reserve=6):
+            return 2, {"selected": [], "target": 3, "warnings": ["weekly plan incomplete"]}, None
+
+        def health(self):
+            return {"total": 1, "by_status": {"VERIFIED": 1}}
+
+        def transition(self, *args, **kwargs):
+            raise AssertionError("不应迁移状态")
+
+    result = run_day(ws.paths, ws.config, ws.projects, pool=FakePool())
+    assert calls == [("Super/Repo", 7)]
+    assert result.status == "skipped" and "plan-week 不完整" in result.message
+
+
+def test_run_day_dry_run_lists_pending_refresh(tmp_path):
+    ws = build_workspace(tmp_path)
+    record = _age_record(ws, 11)
+
+    class FakePool:
+        def show(self, status=None):
+            return [record]
+
+        def refresh(self, *args, **kwargs):
+            raise AssertionError("dry-run 不得刷新")
+
+    result = run_day(ws.paths, ws.config, ws.projects, dry_run=True, pool=FakePool())
+    assert result.status == "dry_run"
+    assert any("pool.py refresh" in command for command in result.evidence["refreshes"])
+
+
+def test_run_day_skips_when_prerefresh_fails(tmp_path):
+    ws = build_workspace(tmp_path)
+    record = _age_record(ws, 11)
+
+    class FakePool:
+        def show(self, status=None):
+            return [record, {**record, "id": "Super/Repo#8", "issue_number": 8}]
+
+        def refresh(self, *args, **kwargs):
+            from pr_agent.errors import PoolError
+
+            raise PoolError("refresh failed")
+
+    result = run_day(ws.paths, ws.config, ws.projects, pool=FakePool())
+    assert result.status == "skipped" and "刷新失败" in result.message

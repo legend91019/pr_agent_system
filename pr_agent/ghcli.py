@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -128,3 +129,50 @@ def _loads(text: str):
         return json.loads(text)
     except json.JSONDecodeError:
         return []
+
+
+def list_open_prs(repo: str, *, limit: int = 100, cache: dict | None = None) -> list[dict] | None:
+    """列出仓库当前打开的 PR（只读）。失败返回 None，由调用方记为 UNKNOWN。"""
+    key = repo.lower()
+    if cache is not None and key in cache:
+        return cache[key]
+    try:
+        result = run_readonly([
+            "pr", "list", "--repo", repo, "--state", "open",
+            "--json", "number,title,url,body,headRefName,author", "--limit", str(limit),
+        ], timeout=90)
+    except (BlockedError, subprocess.TimeoutExpired):
+        if cache is not None:
+            cache[key] = None
+        return None
+    items = _loads(result.stdout) if result.ok else None
+    if cache is not None:
+        cache[key] = items
+    return items
+
+
+def competing_prs(repo: str, issue_number: int, *, own_numbers: set[int] | None = None,
+                  cache: dict | None = None) -> list[dict] | None:
+    """同 Issue 语义竞态 PR（只读）：正文/标题提到 `#N` 或 `/issues/N` 的其他开放 PR。
+
+    查询失败返回 None（UNKNOWN），绝不返回空列表冒充"没有竞态"。
+    """
+    items = list_open_prs(repo, cache=cache)
+    if items is None:
+        return None
+    own = set(own_numbers or ())
+    pattern = re.compile(rf"(?:#|/issues/){issue_number}\b")
+    matches = []
+    for item in items:
+        if item.get("number") in own:
+            continue
+        haystack = f"{item.get('title', '')}\n{item.get('body', '')}"
+        if pattern.search(haystack):
+            matches.append({
+                "number": item.get("number"),
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "head": item.get("headRefName"),
+                "author": (item.get("author") or {}).get("login"),
+            })
+    return matches
