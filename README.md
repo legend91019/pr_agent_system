@@ -128,7 +128,7 @@ pr_agent chat [MESSAGE]                            # 可选前端 LLM（读 conf
 ## 9. 实测与验收
 
 ```bash
-pr_agent doctor                                   # 资产 OK、claude 2.1.x 可用、gemini 不可用（如实报告）
+pr_agent doctor                                   # 资产 OK、claude/gemini 可用、codex/opencode 未安装（如实报告）
 pr_agent status                                   # 68 条池记录：VERIFIED=5，其余分布可见
 pr_agent pick Tencent/BrowserSkill 392 --dry-run   # → BLOCKED：scope_gate=MISSING（拒绝开工）
 pr_agent job run-day --dry-run                     # → skipped：plan-week 0/3 且 reserve 0/6
@@ -151,7 +151,7 @@ pytest -q     # 101 项，全离线：仿真 pool.py / 仿真 adapter / 临时 g
 ## 11. 已知限制（未验证项）
 
 - **真实 agent 端到端**：pytest 用仿真 adapter 验证编排；真实 `claude` 与 `gemini/codex/opencode` 的 CLI 参数会随版本漂移，本轮只做到 `--version` 探测（claude 可用），未在真实仓库跑完整任务。首次真实运行建议 `pick ... --no-run` 看计划 → `run` → 全程盯 `tasks\<id>\events.jsonl`。
-- **`gemini` 探测超时**：本机 `gemini --version` 15s 未返回，按 fail-closed 记为不可用；需人工确认安装/登录后再启用。
+- **adapter 探测有超时保护**：`gemini --version` 首次探测曾 15s 未返回（按 fail-closed 记为不可用），重试后正常；探测结果带缓存，`doctor` 每次重新确认。真实任务前建议先 `doctor` 看当前可用性，不要凭历史结果开工。
 - **定时作业未真实注册**：仅验证了命令生成与 daemon 单轮；`schtasks --confirm` 与 `execution_mode=manual_only` 的放开留待人工决定。
 - **`gh` 写操作未实测**：`full_autonomy` 的留言/推分支/建 PR 依赖 open_coding 的 token 安装，本轮未执行任何 GitHub 写操作。
 - **交叉 review 默认关闭**：逻辑与打回路径已单测，但未接真实第二厂商模型跑过。
